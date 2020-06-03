@@ -18,8 +18,8 @@ class Plugin extends Base
     public function initialize()
     {
         $this->template->hook->attach('template:config:integrations', 'telegram:config/integration');
-        $this->template->hook->attach('template:project:integrations', 'telegram:project/integration');
-        $this->template->hook->attach('template:user:integrations', 'telegram:user/integration');
+        $this->template->hook->attach('template:project:integrations', 'telegram:project/integration',array('bot_name' =>  $this->configModel->get('telegram_username')) );
+        $this->template->hook->attach('template:user:integrations', 'telegram:user/integration',array('bot_name'=> $this->configModel->get('telegram_username')) );
 
         $this->userNotificationTypeModel->setType('telegram', t('Telegram'), '\Kanboard\Plugin\Telegram\Notification\Telegram');
         $this->projectNotificationTypeModel->setType('telegram', t('Telegram'), '\Kanboard\Plugin\Telegram\Notification\Telegram');
@@ -42,7 +42,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '1.1.0';
+        return '1.3.2';
     }
 
     public function getPluginHomepage()

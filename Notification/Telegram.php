@@ -21,17 +21,10 @@ use Kanboard\Model\TaskFileModel;
 
 // Helper functions
 
-function tempnam_sfx($path, $suffix)
+function clean($string) 
 {
-    do
-    {
-        $file = $path."/".mt_rand().$suffix;
-        $fp = @fopen($file, 'x');
-    }
-    while(!$fp);
-
-    fclose($fp);
-    return $file;
+    $string = str_replace(' ', '-', $string); // Replaces all spaces with hyphens.
+    return preg_replace('/[^A-Za-z0-9\-.]/', '', $string); // Removes special chars.
 }
 
 // Overloaded classes 
@@ -51,6 +44,8 @@ class Telegram extends Base implements NotificationInterface
         $apikey = $this->userMetadataModel->get($user['id'], 'telegram_apikey', $this->configModel->get('telegram_apikey'));
         $bot_username = $this->userMetadataModel->get($user['id'], 'telegram_username', $this->configModel->get('telegram_username'));
         $chat_id = $this->userMetadataModel->get($user['id'], 'telegram_user_cid');
+        $forward_attachments = $this->userMetadataModel->get($user['id'], 'forward_attachments', $this->configModel->get('forward_attachments'));
+        
         if (! empty($apikey)) 
         {
             if ($eventName === TaskModel::EVENT_OVERDUE) 
@@ -59,13 +54,13 @@ class Telegram extends Base implements NotificationInterface
                 {
                     $project = $this->projectModel->getById($task['project_id']);
                     $eventData['task'] = $task;
-                    $this->sendMessage($apikey, $bot_username, $chat_id, $project, $eventName, $eventData);
+                    $this->sendMessage($apikey, $bot_username, $forward_attachments, $chat_id, $project, $eventName, $eventData);
                 }
             } 
             else 
             {
                 $project = $this->projectModel->getById($eventData['task']['project_id']);
-                $this->sendMessage($apikey, $bot_username, $chat_id, $project, $eventName, $eventData);
+                $this->sendMessage($apikey, $bot_username, $forward_attachments, $chat_id, $project, $eventName, $eventData);
             }
         }
     }
@@ -83,9 +78,11 @@ class Telegram extends Base implements NotificationInterface
         $apikey = $this->projectMetadataModel->get($project['id'], 'telegram_apikey', $this->configModel->get('telegram_apikey'));
         $bot_username = $this->projectMetadataModel->get($project['id'], 'telegram_username', $this->configModel->get('telegram_username'));
         $chat_id = $this->projectMetadataModel->get($project['id'], 'telegram_group_cid');
+        $forward_attachments = $this->userMetadataModel->get($project['id'], 'forward_attachments', $this->configModel->get('forward_attachments'));
+        
         if (! empty($apikey)) 
         {
-            $this->sendMessage($apikey, $bot_username, $chat_id, $project, $eventName, $eventData);
+            $this->sendMessage($apikey, $bot_username, $forward_attachments, $chat_id, $project, $eventName, $eventData);
         }
     }
     
@@ -100,7 +97,7 @@ class Telegram extends Base implements NotificationInterface
      * @param  string    $eventName
      * @param  array     $eventData
      */
-    protected function sendMessage($apikey, $bot_username, $chat_id, array $project, $eventName, array $eventData)
+    protected function sendMessage($apikey, $bot_username, $forward_attachments, $chat_id, array $project, $eventName, array $eventData)
     {
     
         // Get required data
@@ -141,30 +138,33 @@ class Telegram extends Base implements NotificationInterface
         $subtask_events = array(SubtaskModel::EVENT_CREATE, SubtaskModel::EVENT_UPDATE, SubtaskModel::EVENT_DELETE);
         $comment_events = array(CommentModel::EVENT_UPDATE, CommentModel::EVENT_CREATE, CommentModel::EVENT_DELETE, CommentModel::EVENT_USER_MENTION);
         
-        if (in_array($eventName, $subtask_events))  // If description available
+        if (in_array($eventName, $subtask_events))  // For subtask events
         {
             $subtask_status = $eventData['subtask']['status'];
             $subtask_symbol = '';
             
             if ($subtask_status == SubtaskModel::STATUS_DONE)
             {
-                $subtask_symbol = '[X] ';
+                $subtask_symbol = '❌ ';
             }
             elseif ($subtask_status == SubtaskModel::STATUS_TODO)
             {
-                $subtask_symbol = '[ ] ';
+                $subtask_symbol = '';
             }
             elseif ($subtask_status == SubtaskModel::STATUS_INPROGRESS)
             {
-                $subtask_symbol = '[~] ';
+                $subtask_symbol = '🕘 ';
             }
             
             $message .= "\n<b>  ↳ ".$subtask_symbol.'</b> <em>"'.htmlspecialchars($eventData['subtask']['title'], ENT_NOQUOTES | ENT_IGNORE).'"</em>';
         }
         
-        elseif (in_array($eventName, $description_events))  // For subtasks available
+        elseif (in_array($eventName, $description_events))  // If description available
         {
-            $message .= "\n✏️ ".'<em>"'.htmlspecialchars($eventData['task']['description'], ENT_NOQUOTES | ENT_IGNORE).'"</em>';
+            if ($eventData['task']['description'] != '')
+            {
+                $message .= "\n✏️ ".'<em>"'.htmlspecialchars($eventData['task']['description'], ENT_NOQUOTES | ENT_IGNORE).'"</em>';
+            }
         }
         
         elseif (in_array($eventName, $comment_events))  // If comment available
@@ -172,13 +172,14 @@ class Telegram extends Base implements NotificationInterface
             $message .= "\n💬 ".'<em>"'.htmlspecialchars($eventData['comment']['comment'], ENT_NOQUOTES | ENT_IGNORE).'"</em>';
         }
         
-        elseif ($eventName === TaskFileModel::EVENT_CREATE)  // If attachment available
+        elseif ($eventName === TaskFileModel::EVENT_CREATE and $forward_attachments)  // If attachment available
         {
             $file_path = getcwd()."/data/files/".$eventData['file']['path'];
             $file_name = $eventData['file']['name'];
             $is_image = $eventData['file']['is_image'];
             
-            $attachment = tempnam_sfx(sys_get_temp_dir(), $file_name);
+            mkdir(sys_get_temp_dir()."/kanboard_telegram_plugin");
+            $attachment = sys_get_temp_dir()."/kanboard_telegram_plugin/".clean($file_name);
             file_put_contents($attachment, file_get_contents($file_path));
         }
         
@@ -189,6 +190,16 @@ class Telegram extends Base implements NotificationInterface
             
             // Create Telegram API object
             $telegram = new TelegramClass($apikey, $bot_username);
+            
+            // Setup proxy details if set in kanboard configuration
+            if (HTTP_PROXY_HOSTNAME != '')
+            {
+                Request::setClient(new \GuzzleHttp\Client([
+                               'base_uri' => 'https://api.telegram.org',
+                               'proxy'    => 'tcp://'.HTTP_PROXY_HOSTNAME.':'.HTTP_PROXY_PORT,
+                               'verify'   => false,
+                             ]));
+            }
 
             // Message pay load
             $data = array('chat_id' => $chat_id, 'text' => $message, 'parse_mode' => 'HTML');
@@ -220,9 +231,10 @@ class Telegram extends Base implements NotificationInterface
                 
                 // Remove temporory file
                 unlink($attachment);
+                rmdir(sys_get_temp_dir()."/kanboard_telegram_plugin");
             }
-        } 
-        catch (TelegramException $e) 
+        }
+        catch (TelegramException $e)
         {
             // log telegram errors
             error_log($e->getMessage());
